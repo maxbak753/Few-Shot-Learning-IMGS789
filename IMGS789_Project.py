@@ -1,6 +1,6 @@
 # IMGS789 - Machine Learning for Difficult Data
 # Max Bakalos
-# 7/3/2026
+# 7/4/2026
 
 # Project (Topic #5): Few-Shot Learning with Prototypical Network
 
@@ -33,7 +33,7 @@ def checkGPU():
     print("PyTorch Version: %s" % torch.__version__)
     # Check that the GPU is working with PyTorch
     cuda_available = torch.cuda.is_available()
-    print("CUDA is available? : %r" % cuda_available)
+    print("CUDA is available?: %r" % cuda_available)
     if cuda_available:
         print("Device: " + torch.cuda.get_device_name(0))
     device = torch.device("cuda" if cuda_available else "cpu")
@@ -158,6 +158,7 @@ def test_model(model, shot, way, query_samples_per_class, data_set, image_data, 
     avg_loss = 0
     
     accuracy = np.zeros(iterations)
+    MCC = np.zeros(iterations)
     
     # Put Network in Evaluation Mode
     model.eval()
@@ -206,7 +207,11 @@ def test_model(model, shot, way, query_samples_per_class, data_set, image_data, 
             yLabel_tot = torch.cat((yLabel_tot, te_query_y))
             # Append Total Y Predictions
             te_classes = te_classes.to(device)
-            predY_tot = torch.cat((predY_tot, te_classes[predictions]))
+            predY_ep = te_classes[predictions] # predictions for this episode
+            predY_tot = torch.cat((predY_tot, predY_ep)) # total predictions
+            
+            # Episode MCC
+            MCC[i] = matthews_corrcoef( te_query_y.cpu().numpy(), predY_ep.cpu().numpy() )
             
         
         avg_loss = avg_loss / iterations
@@ -216,13 +221,20 @@ def test_model(model, shot, way, query_samples_per_class, data_set, image_data, 
         avg_accuracy = np.mean(accuracy) # average
         std_accuracy = np.std(accuracy, ddof=1) # standard deviation (ddof=1 makes it the sample standard deviation)
         
-        SEM =  std_accuracy / np.sqrt(iterations) # standard error of the mean
-        confidence_interval_95_percent = 1.96 * SEM # C.I.
+        SEM_accuracy =  std_accuracy / np.sqrt(iterations) # standard error of the mean
+        confidence_interval_95_percent_accuracy = 1.96 * SEM_accuracy # C.I.
         # lo_conf_bound_acur = avg_accuracy - confidence_interval_95_percent
         # hi_conf_bound_acur = avg_accuracy + confidence_interval_95_percent
         
-        # Matthews Correlation Coefficient
-        MCC = matthews_corrcoef( yLabel_tot.cpu().numpy(), predY_tot.cpu().numpy() )
+        # # Total Matthews Correlation Coefficient
+        # MCC_tot = matthews_corrcoef( yLabel_tot.cpu().numpy(), predY_tot.cpu().numpy() )
+        
+        # MCC statistics
+        avg_MCC = np.mean(MCC)
+        std_MCC = np.std(MCC, ddof=1)
+        
+        SEM_MCC =  std_MCC / np.sqrt(iterations) # standard error of the mean
+        confidence_interval_95_percent_MCC = 1.96 * SEM_MCC # C.I.
         
         # # Confusion Matrix
         # test_labels_numeric = torch.sort(te_classes)[0].tolist()
@@ -232,9 +244,9 @@ def test_model(model, shot, way, query_samples_per_class, data_set, image_data, 
         
         return ( avg_loss, 
                  avg_accuracy, std_accuracy, 
-                 confidence_interval_95_percent,
-                 MCC  
-                  )
+                 confidence_interval_95_percent_accuracy,
+                 avg_MCC, std_MCC, 
+                 confidence_interval_95_percent_MCC )
 
 
 ########################################################################
@@ -303,6 +315,10 @@ device = checkGPU()
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 # LOAD DATA
+print("~*~*~*~*~*~*~*~*~*~*~*~*~")
+
+# Start Training Timer
+start = time.time()
 
 batch_size = 8
 
@@ -349,10 +365,21 @@ print("Indexing Classes for Support-Query Split")
 train_class_indices = class_indexer(train_set)
 test_class_indices = class_indexer(test_set)
 
+# End training timer
+end = time.time()
+print("Data Loading Time: %f seconds" % (end - start))
 
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Training Setup
 
+#\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
+# %% TRAINING ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+print("|||||||||||||||||||||||||||||||||||||||||")
+print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+
+# Training Setup ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~
+
+# Instantiate Convolutional Neural Network
 net = LatentSpacerNetV2().to(device) # put the network onto the GPU if available
 # Check if GPU is used
 print("Convolutional Neural Network Device: %s" % next(net.parameters()).device)
@@ -361,19 +388,17 @@ print("Convolutional Neural Network Device: %s" % next(net.parameters()).device)
 lgSftmx = nn.LogSoftmax(dim=1)
 loss_criterion = nn.NLLLoss()
 
-# Optimization Algorithm: Stochastic Gradient Descent (SGD)
-# optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
+# Optimization Algorithm: ADAM
 optimizer = optim.Adam( net.parameters(), lr=6e-4 )
 
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Training
+# Training Model ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~
 
 print("Training...")
 
 # Start Training Timer
 start = time.time()
 
-total_epochs = 20 # total number of epochs
+total_epochs = 10 # total number of epochs
 episodes_per_epoch = 100 # number of episodes within each epoch
 
 
@@ -385,17 +410,11 @@ query_samples_per_class = 15 # number of samples in the query set
 way_test = 5 # number of classes for the test (while still training)
 test_iterations = 50 # number of tests to average (while still training)
 
-# # Setup Plot
-# plt.ion()
-# fig, ax = plt.subplots()
-# loss_line = ax.plot([], [])[0]
-# ax.set(xlim=(0, total_epochs-1), ylim=(0, 1))
-# plt.show()
-# epoch_losses = []
-
 # Put Network in Training Mode
 net.train()
 
+train_loss = np.zeros(total_epochs * episodes_per_epoch)
+epoch_train_loss = np.zeros(total_epochs)
 
 
 # For each epoch...
@@ -428,7 +447,9 @@ for epoch in range(total_epochs):
         # Find the distance to each prototype
         distances = torch.cdist(tr_query_features, support_prototypes)
         
+        # Calculate Loss
         loss = loss_criterion(lgSftmx(-distances), tr_query_ep)
+        train_loss[(epoch*episodes_per_epoch) + i] = loss.item()
 
         # Backpropagate the loss
         loss.backward() # backpropagation
@@ -450,18 +471,21 @@ for epoch in range(total_epochs):
         # Add onto running accuracy
         running_accuracy += accuracy.item()
 
-    avg_epoch_loss = running_loss / episodes_per_epoch
+    # epoch_loss = running_loss / episodes_per_epoch
+    epoch_train_loss[epoch] = running_loss / episodes_per_epoch
     
     print('[Epoch %d, Episodes %d ]\n- Train  |  Loss: %.3f  Accuracy: %.2f%%' %
       (epoch + 1,
        episodes_per_epoch,
-       avg_epoch_loss,
-       100*running_accuracy/ episodes_per_epoch))
+       epoch_train_loss[epoch],
+       100 * running_accuracy / episodes_per_epoch))
+    
+    
     
     # Test Model (just to keep track of progress, DO NOT USE TO CHANGE MODEL!!)
     ( te_avg_loss, 
-      te_avg_acur, te_std_acur, te_CI, 
-      te_MCC  
+      te_avg_acur, te_std_acur, te_CI_acur, 
+      te_avg_MCC, te_std_MCC, te_CI_MCC  
        ) = test_model(net, shot, way_test, query_samples_per_class, 
                                       test_set, te_images, te_labels, 
                                       test_class_indices, test_iterations, device)
@@ -470,12 +494,6 @@ for epoch in range(total_epochs):
     print("- Test   |  Loss: %.3f  Accuracy: %.2f%%" % (te_avg_loss, 100*te_avg_acur))
     # ConfusionMatrixDisplay(te_conf_mat, display_labels=test_labels_text).plot()
     plt.draw()
-    
-    # # Update Plot
-    # epoch_losses.append(avg_epoch_loss) # y-data update
-    # loss_line.set_data(np.arange(0,epoch+1), epoch_losses) # update plot data
-    # fig.canvas.draw_idle() # draw
-    # plt.pause(0.1)
 
 # Confusion Matrix
 # ConfusionMatrixDisplay(te_conf_mat, display_labels=test_labels_text).plot()
@@ -483,8 +501,17 @@ for epoch in range(total_epochs):
 # End training timer
 end = time.time()
 print("Training Time: %f seconds" % (end - start))
-
 print('Finished Training')
+
+# %% Plot Training Loss
+plt.plot(np.arange(total_epochs * episodes_per_epoch), train_loss, label="Episode Training Loss")
+plt.plot(np.arange(1, total_epochs+1) * episodes_per_epoch, epoch_train_loss, 'o--', label="Epoch Training Loss")
+# plt.plot(np.arange(total_epochs * episodes_per_epoch), te_avg_loss, label="Testing Loss (not used to change model)")
+plt.legend()
+plt.xlabel("Iteration")
+plt.ylabel("Loss")
+plt.title("Training")
+plt.show()
 
 
 # %% ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -492,6 +519,7 @@ print('Finished Training')
 
 print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 print("|||||||||||||||||||||||||||||||||||||||||")
+print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 
 # Start Testing Timer
 start = time.time()
@@ -504,8 +532,8 @@ print("Testing with %d iterations... " % final_test_iterations)
 #                                                             test_set, te_images, te_labels, 
 #                                                             test_class_indices, final_test_iterations, device)
 ( avg_loss, 
-  avg_acur, std_acur, CI_95perc, 
-  MCC
+  avg_acur, std_acur, CI_95perc_acur, 
+  avg_MCC, std_MCC, CI_95perc_MCC
    ) = test_model(net, shot, way_final_test, query_samples_per_class, 
                                   test_set, te_images, te_labels, 
                                   test_class_indices, final_test_iterations, device)
@@ -514,10 +542,11 @@ print("Testing with %d iterations... " % final_test_iterations)
 # %% Final Results
 print("_______________________\nTEST RESULTS")
 print("Loss: %.3f" % (avg_loss))
-print("Accuracy: %.2f%% ± %.3f%%  |  Standard Deviation: %.2f%%" % (100*avg_acur, 100*CI_95perc, 100*std_acur))
+print("Accuracy: %.2f%% ± %.3f%%  |  Standard Deviation: %.2f%%" % (100*avg_acur, 100*CI_95perc_acur, 100*std_acur))
 # print("Standard Deviation of Accuracy: %.2f%%" % (100 *std_acur))
 # print("Average Accuracy: %.2f%%" % (100 *avg_acur))
-print("MCC: %.3f" % MCC)
+# print("MCC: %.3f" % MCC)
+print("MCC: %.4f ± %.5f  |  Standard Deviation: %.4f" % (avg_MCC, CI_95perc_MCC, std_MCC))
 # ConfusionMatrixDisplay(conf_mat, display_labels=test_labels_text).plot();
 
 
