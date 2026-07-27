@@ -18,9 +18,10 @@ My convolutional neural network consists of 3 sets of convolution layer → max-
 Overall, the model seemed to perform well, with an average accuracy of 94.47% and a fairly small standard deviation of 5.02%, for 5-shot learning. However, 1-shot learning performed worse, with 85.81% accuracy with a larger  9.82% standard deviation. The Matthews Correlation Coefficient had a similar pattern with a value of 0.8305 for 1-shot and 0.9325 for 5-shot. The results are depicted in table #1.
 
 ![Training Loss (1-shot)](https://github.com/maxbak753/Few-Shot-Learning-IMGS789/blob/main/images/1-shot%20training%20plot.PNG)
-Figure #3: Training Loss (1-Shot)
+Figure #1: Training Loss (1-Shot)
 ![Training Loss (5-shot)](https://github.com/maxbak753/Few-Shot-Learning-IMGS789/blob/main/images/5-shot%20training%20plot.PNG)
 Figure #2: Training Loss (5-shot)
+  
 ![Results for 1-shot and 5-shot learning](https://github.com/maxbak753/Few-Shot-Learning-IMGS789/blob/main/images/result%20table%201-shot%205-shot.PNG)
 Table #1: Results for 1-shot and 5-shot learning
 
